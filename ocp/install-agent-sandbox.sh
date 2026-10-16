@@ -16,7 +16,7 @@ if kubectl get crd sandboxes.agents.x-k8s.io >/dev/null 2>&1; then
   exit 0
 fi
 
-TAG=$(curl -sSL "https://api.github.com/repos/${REPO}/releases/latest" | grep -m1 '"tag_name"' | cut -d '"' -f4)
+TAG=$(curl -sSL "https://api.github.com/repos/${REPO}/releases/latest" | python3 -c 'import json,sys; print(json.load(sys.stdin)["tag_name"])')
 if [ -z "${TAG}" ]; then
   echo "error: could not resolve latest ${REPO} release tag" >&2
   exit 1

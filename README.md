@@ -81,28 +81,27 @@ real K8s/OCP deployment, not just a Kubernetes-deployment-mechanics
 smoke test.
 
 ```bash
+podman machine start                # if not already running
+export KIND_EXPERIMENTAL_PROVIDER=podman  # Podman-backed Kind (Docker users can skip this)
 make kind-up                      # create the Kind cluster
 make kind-openshell-up            # install the Agent Sandbox CRD/controller + deploy the gateway
-make kind-openshell-register      # register with the CLI (one-time; needs port-forward running)
-make kind-openshell-port-forward  # forward the gateway to localhost:9090 (foreground)
+make kind-openshell-register      # register with the CLI (one-time)
 make kind-openshell-test-spawn    # real spawn test via the kubernetes driver (needs cloud_agents + openshell installed)
 make kind-status                  # all pods + sandboxes in the cluster
 make kind-down                    # delete the cluster
 ```
 
-Gateway: `http://127.0.0.1:9090` (once `kind-openshell-port-forward` is running).
+Gateway: `http://localhost:9080` (NodePort 30080 mapped to host port 9080 by
+`kind/kind-config.yaml` — reachable directly, no port-forward needed).
 
 ### Legacy: Podman DooD on Kind
 
-An older path (`make kind-openshell-podman-up`) deploys the gateway as a
-plain Deployment (raw manifests) with sandboxes running via Podman DooD —
-the host's Podman socket mounted into the Kind node — instead of the Agent
-Sandbox controller. Kept for reference/comparison only; not a supported
-deployment target (Kind counts as a Kubernetes target, which uses the
-kubernetes compute driver exclusively). See
-`make kind-openshell-podman-up/-down/-logs/-health/-register`.
-
-Gateway: `http://localhost:9080` · Health: `http://localhost:9081/healthz`
+An older experimental path ran the gateway as a plain Deployment with
+sandboxes via Podman DooD (the host's Podman socket mounted into the Kind
+node). It has been removed; Kind counts as a Kubernetes target, which uses
+the kubernetes compute driver exclusively. The Podman socket, gateway data,
+and certs mounts are still wired into `kind/kind-config.yaml` so the node
+keeps working for anything that expects them.
 
 ### lightspeed-stack on Kind
 
@@ -132,8 +131,12 @@ kubectl --kubeconfig kind/kubeconfig -n openshell-k8s create secret \
 Deterministic tools (`get_pod_status`/`get_pods`/`describe_pod`/`get_pod_logs`, `memoryLimit=347Mi`) backing
 the lightspeed-stack `*-none-tools` demo scenarios and e2e seam test —
 lets an in-process agent prove it really called a tool instead of
-hallucinating. Same `openshell` namespace as the stack, reached
-in-cluster at `http://mcp-pod-status-mock:8084/mcp`:
+hallucinating. Deployed into the gateway namespace (`openshell-k8s`) —
+this must match the namespace the Agent Sandbox controller runs sandbox
+pods in, because sandbox pods resolve the short service name via
+same-namespace cluster DNS. Reached in-cluster at
+`http://mcp-pod-status-mock:8084/mcp` (port-forward 8084 to reach it from
+the host):
 
 ```bash
 make kind-mcp-pod-status-up    # build + kind load + deploy/restart it

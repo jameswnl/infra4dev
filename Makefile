@@ -134,8 +134,18 @@ kind-up:  ## Create Kind cluster
 	@if kind get clusters 2>/dev/null | grep -q "^$(KIND_CLUSTER)$$"; then \
 		echo "Cluster '$(KIND_CLUSTER)' already exists"; \
 	else \
-		echo "[kind] Rendering config (repo root + uid)..."; \
-		sed -e 's|__REPO_ROOT__|$(CURDIR)|g' -e 's|__UID__|$(shell id -u)|g' \
+		mkdir -p kind/data/openshell; \
+		if ! podman volume inspect openshell-certs >/dev/null 2>&1; then \
+			echo "[kind] Creating missing 'openshell-certs' podman volume..."; \
+			podman volume create openshell-certs >/dev/null; \
+		fi; \
+		CERTS="$$(podman volume inspect openshell-certs --format '{{.Mountpoint}}')"; \
+		if [ -z "$$CERTS" ]; then \
+			echo "ERROR: could not resolve the openshell-certs volume mountpoint (is the Podman machine running?)." >&2; \
+			exit 1; \
+		fi; \
+		echo "[kind] Rendering config (repo root + uid + certs volume)..."; \
+		sed -e 's|__REPO_ROOT__|$(CURDIR)|g' -e 's|__UID__|$(shell id -u)|g' -e "s|__OPENSHELL_CERTS__|$$CERTS|g" \
 			kind/kind-config.yaml > kind/kind-config.generated.yaml; \
 		echo "[kind] Creating cluster..."; \
 		kind create cluster --config kind/kind-config.generated.yaml --wait 60s; \
@@ -246,17 +256,17 @@ kind-mcp-pod-status-build:  ## Build the mock pod-status MCP image and load it i
 	KIND_EXPERIMENTAL_PROVIDER=podman kind load image-archive "$$TAR" --name $(KIND_CLUSTER)
 
 kind-mcp-pod-status-apply:  ## Deploy the mock pod-status MCP server to Kind (requires kind-mcp-pod-status-build first)
-	@$(KUBECTL) create namespace openshell --dry-run=client -o yaml | $(KUBECTL) apply -f -
+	@$(KUBECTL) create namespace $(KIND_OPENSHELL_NS) --dry-run=client -o yaml | $(KUBECTL) apply -f -
 	@$(KUBECTL) apply -f kind/mcp-pod-status-mock.yaml
-	@$(KUBECTL) -n openshell rollout status deployment/mcp-pod-status-mock --timeout=120s
+	@$(KUBECTL) -n $(KIND_OPENSHELL_NS) rollout status deployment/mcp-pod-status-mock --timeout=120s
 
 kind-mcp-pod-status-up: kind-mcp-pod-status-build kind-mcp-pod-status-apply  ## Build and deploy the mock pod-status MCP server to Kind
 
 kind-mcp-pod-status-down:  ## Remove the mock pod-status MCP server from Kind
-	@$(KUBECTL) -n openshell delete deployment/mcp-pod-status-mock service/mcp-pod-status-mock --ignore-not-found
+	@$(KUBECTL) -n $(KIND_OPENSHELL_NS) delete deployment/mcp-pod-status-mock service/mcp-pod-status-mock --ignore-not-found
 
 kind-mcp-pod-status-logs:  ## Tail mock pod-status MCP logs in Kind
-	$(KUBECTL) -n openshell logs -f deployment/mcp-pod-status-mock
+	$(KUBECTL) -n $(KIND_OPENSHELL_NS) logs -f deployment/mcp-pod-status-mock
 
 # ---------- OpenShift (oc) ----------
 #

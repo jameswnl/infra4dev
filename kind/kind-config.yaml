@@ -1,7 +1,22 @@
 # Kind cluster with host Podman socket mount for OpenShell gateway DooD.
 #
 # Template: `make kind-up` renders this to kind/kind-config.generated.yaml,
-# substituting __REPO_ROOT__ (absolute repo path) and __UID__ (host user id).
+# substituting:
+#   __REPO_ROOT__       absolute path of this repo (visible inside the
+#                       Podman machine VM via the /Users virtiofs mount)
+#   __UID__             host user id (podman socket path)
+#   __OPENSHELL_CERTS__  Mountpoint of the `openshell-certs` podman volume
+#                       INSIDE the machine VM, resolved at render time via
+#                       `podman volume inspect` (the volume is created if
+#                       missing). Never hardcode this path: it differs by
+#                       podman-machine implementation (applehv uses
+#                       /var/lib/containers/storage/volumes/..., older
+#                       vfkit machines used /var/home/core/.local/share/...).
+#
+# The extraMounts serve the legacy DooD paths (host Podman socket, gateway
+# data dir, JWT certs). The canonical kubernetes-driver deployment
+# (kind-openshell-up) does not read them, but they are kept mounted so the
+# DooD paths keep working against the same cluster.
 kind: Cluster
 apiVersion: kind.x-k8s.io/v1alpha4
 name: local-infra
@@ -12,7 +27,7 @@ nodes:
         containerPath: /run/user/501/podman/podman.sock
       - hostPath: __REPO_ROOT__/kind/data/openshell
         containerPath: /var/lib/openshell-data
-      - hostPath: /var/lib/containers/storage/volumes/openshell-certs/_data
+      - hostPath: __OPENSHELL_CERTS__
         containerPath: /var/lib/openshell-certs
         readOnly: true
     extraPortMappings:

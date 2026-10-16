@@ -1,7 +1,12 @@
 # Mock pod-status MCP server for Kind: deterministic tools
 # (get_pod_status/get_pods/describe_pod/get_pod_logs, memoryLimit=347Mi) backing the lightspeed-stack
-# *-none-tools demo scenarios and e2e seam test. Same namespace as
-# lightspeed-stack, reached in-cluster at http://mcp-pod-status-mock:8084/mcp.
+# *-none-tools demo scenarios and e2e seam test. Deployed into the gateway
+# namespace (openshell-k8s) — MUST match the namespace the Agent Sandbox
+# controller runs sandbox pods in: sandbox pods resolve the short service
+# name `mcp-pod-status-mock` via same-namespace cluster DNS, so a different
+# namespace breaks every spawn:ephemeral demo/e2e scenario with an opaque
+# "Could not reach MCP server" agent error. Reached in-cluster at
+# http://mcp-pod-status-mock:8084/mcp; from the host, port-forward 8084.
 #
 # Requires the image loaded into the Kind node first:
 #   make kind-mcp-pod-status-build
@@ -9,7 +14,7 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: mcp-pod-status-mock
-  namespace: openshell
+  namespace: openshell-k8s
   labels:
     app: mcp-pod-status-mock
 spec:
@@ -50,7 +55,7 @@ apiVersion: v1
 kind: Service
 metadata:
   name: mcp-pod-status-mock
-  namespace: openshell
+  namespace: openshell-k8s
 spec:
   selector:
     app: mcp-pod-status-mock
