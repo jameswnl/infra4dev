@@ -1,0 +1,260 @@
+# lightspeed-stack deployment for the real OCP "production" OpenShell
+# gateway (make ocp-prod-openshell-up), wired via in-cluster Service DNS
+# with real TLS (trusting the gateway's own internal-DNS server cert) and
+# a confidential-client OIDC identity minted from the dev Keycloak.
+#
+# Requires the harness-only image (see
+# ~/ws/lightspeed-stack/deploy/lightspeed-stack/Containerfile.harness,
+# built for linux/amd64 to match this cluster's nodes) pushed somewhere
+# the cluster can pull it -- quay.io/jameswong/lightspeed-stack:ocp-harness.
+#
+# The real LLM credential is NOT in this file:
+#   oc -n openshell-prod create secret generic lightspeed-stack-llm-secret \
+#     --from-literal=OPENAI_API_KEY="$OPENAI_API_KEY"
+#
+# Nor is the OpenShell OIDC identity. The stack now authenticates to the
+# gateway via the confidential service-account client "lcore-agents" using
+# the Client Credentials grant, and refreshes its own short-lived tokens
+# (SpawnerConfiguration.openshell_oidc_* -> OidcClientCredentialsTokenProvider,
+# see lightspeed-stack's workflow/spawner_factory.py). No more manual token
+# re-issuing or pod restarts on expiry. Provision the client and create the
+# Secret this Deployment reads (lightspeed-stack-openshell-oidc) with:
+#   make ocp-prod-keycloak-lcore-client
+# It ensures the client on the running Keycloak (kcadm), reads its secret +
+# service-account subject, and writes both the k8s Secret and ./.env.ocp-prod
+# (the latter for a local `uv run` of the stack against the external route).
+apiVersion: v1
+kind: Secret
+metadata:
+  name: lightspeed-stack-secrets
+  namespace: openshell-prod
+type: Opaque
+stringData:
+  POSTGRES_PASSWORD: lightspeed
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: lightspeed-postgres
+  namespace: openshell-prod
+  labels:
+    app: lightspeed-postgres
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: lightspeed-postgres
+  template:
+    metadata:
+      labels:
+        app: lightspeed-postgres
+    spec:
+      containers:
+        # sclorg's image (not the official docker.io/library/postgres) --
+        # built to run under OpenShift's arbitrary-UID SCC, which the
+        # official image's entrypoint doesn't handle (fails trying to
+        # chmod/chown its data dir under a UID it doesn't expect).
+        - name: postgres
+          image: quay.io/sclorg/postgresql-16-c9s:latest
+          ports:
+            - containerPort: 5432
+          env:
+            - name: POSTGRESQL_USER
+              value: lightspeed
+            - name: POSTGRESQL_DATABASE
+              value: lightspeed
+            - name: POSTGRESQL_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: lightspeed-stack-secrets
+                  key: POSTGRES_PASSWORD
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/postgresql/data
+          readinessProbe:
+            exec:
+              command: ["pg_isready", "-U", "lightspeed"]
+            initialDelaySeconds: 5
+            periodSeconds: 5
+      volumes:
+        - name: data
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: lightspeed-postgres
+  namespace: openshell-prod
+spec:
+  selector:
+    app: lightspeed-postgres
+  ports:
+    - port: 5432
+      targetPort: 5432
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: lightspeed-stack-config
+  namespace: openshell-prod
+data:
+  lightspeed-stack.yaml: |
+    name: Lightspeed Core Stack (OCP)
+    service:
+      host: 0.0.0.0
+      port: 8080
+      base_url: http://localhost:8080
+      auth_enabled: false
+      workers: 1
+      color_log: true
+      access_log: true
+
+    llama_stack:
+      use_as_library_client: false
+      url: http://localhost:8321
+      allow_degraded_mode: true
+
+    user_data_collection:
+      feedback_enabled: false
+
+    database:
+      postgres:
+        host: lightspeed-postgres
+        port: 5432
+        db: lightspeed
+        user: lightspeed
+        password: "${env.POSTGRES_PASSWORD}"
+
+    conversation_cache:
+      type: "postgres"
+      postgres:
+        host: lightspeed-postgres
+        port: 5432
+        db: lightspeed
+        user: lightspeed
+        password: "${env.POSTGRES_PASSWORD}"
+
+    authentication:
+      module: "noop"
+
+    workflow_engine:
+      enabled: true
+      max_concurrent_workflows: 10
+      transcript_retention_days: 30
+
+    spawner:
+      type: openshell
+      openshell_gateway_url: "openshell-prod:8080"
+      openshell_driver: kubernetes
+      openshell_tls_ca: /etc/openshell-tls/ca.crt
+      openshell_oidc_issuer: "${env.OPENSHELL_OIDC_ISSUER}"
+      openshell_oidc_client_id: "${env.OPENSHELL_OIDC_CLIENT_ID}"
+      openshell_oidc_client_secret: "${env.OPENSHELL_OIDC_CLIENT_SECRET}"
+      openshell_oidc_audience: "${env.OPENSHELL_OIDC_AUDIENCE}"
+      sandbox_image: "quay.io/jameswong/lightspeed-agentic-sandbox:latest-amd64"
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: lightspeed-stack
+  namespace: openshell-prod
+  labels:
+    app: lightspeed-stack
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: lightspeed-stack
+  template:
+    metadata:
+      labels:
+        app: lightspeed-stack
+    spec:
+      imagePullSecrets:
+        - name: quay-pull-secret
+      containers:
+        - name: lightspeed-stack
+          image: quay.io/jameswong/lightspeed-stack:ocp-harness
+          # Always, not the default IfNotPresent: "ocp-harness" is a fixed,
+          # mutable tag (see ocp-prod-lightspeed-build) -- IfNotPresent
+          # would let a node keep serving whatever digest it last pulled
+          # under that tag even after a fresh push, silently running stale
+          # code on `rollout restart`.
+          imagePullPolicy: Always
+          args: ["-c", "/etc/lightspeed/lightspeed-stack.yaml"]
+          ports:
+            - containerPort: 8080
+          env:
+            - name: OPENAI_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: lightspeed-stack-llm-secret
+                  key: OPENAI_API_KEY
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: lightspeed-stack-secrets
+                  key: POSTGRES_PASSWORD
+            - name: OPENSHELL_OIDC_ISSUER
+              valueFrom:
+                secretKeyRef:
+                  name: lightspeed-stack-openshell-oidc
+                  key: OPENSHELL_OIDC_ISSUER
+            - name: OPENSHELL_OIDC_CLIENT_ID
+              valueFrom:
+                secretKeyRef:
+                  name: lightspeed-stack-openshell-oidc
+                  key: OPENSHELL_OIDC_CLIENT_ID
+            - name: OPENSHELL_OIDC_CLIENT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: lightspeed-stack-openshell-oidc
+                  key: OPENSHELL_OIDC_CLIENT_SECRET
+            - name: OPENSHELL_OIDC_AUDIENCE
+              valueFrom:
+                secretKeyRef:
+                  name: lightspeed-stack-openshell-oidc
+                  key: OPENSHELL_OIDC_AUDIENCE
+          volumeMounts:
+            - name: config
+              mountPath: /etc/lightspeed/lightspeed-stack.yaml
+              subPath: lightspeed-stack.yaml
+              readOnly: true
+            - name: openshell-ca
+              mountPath: /etc/openshell-tls
+              readOnly: true
+          readinessProbe:
+            httpGet:
+              path: /readiness
+              port: 8080
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          resources:
+            requests:
+              cpu: 200m
+              memory: 512Mi
+            limits:
+              cpu: 1000m
+              memory: 1Gi
+      volumes:
+        - name: config
+          configMap:
+            name: lightspeed-stack-config
+        - name: openshell-ca
+          secret:
+            secretName: openshell-server-tls
+            items:
+              - key: ca.crt
+                path: ca.crt
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: lightspeed-stack
+  namespace: openshell-prod
+spec:
+  selector:
+    app: lightspeed-stack
+  ports:
+    - port: 8080
+      targetPort: 8080

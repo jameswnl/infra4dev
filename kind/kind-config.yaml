@@ -1,0 +1,21 @@
+# Kind cluster with host Podman socket mount for OpenShell gateway DooD.
+#
+# Template: `make kind-up` renders this to kind/kind-config.generated.yaml,
+# substituting __REPO_ROOT__ (absolute repo path) and __UID__ (host user id).
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+name: local-infra
+nodes:
+  - role: control-plane
+    extraMounts:
+      - hostPath: /run/user/__UID__/podman/podman.sock
+        containerPath: /run/user/501/podman/podman.sock
+      - hostPath: __REPO_ROOT__/kind/data/openshell
+        containerPath: /var/lib/openshell-data
+      - hostPath: /var/lib/containers/storage/volumes/openshell-certs/_data
+        containerPath: /var/lib/openshell-certs
+        readOnly: true
+    extraPortMappings:
+      - containerPort: 30080
+        hostPort: 9080
+        protocol: TCP

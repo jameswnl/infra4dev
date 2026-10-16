@@ -1,0 +1,5 @@
+kind/kubeconfig
+kind/data/
+kind/kind-config.generated.yaml
+.env.*
+.claude/
